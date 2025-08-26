@@ -6,7 +6,7 @@ from tkinter import ttk, messagebox, filedialog
 
 # ========= 基本資訊（請依你的 GitHub 倉庫調整） =========
 APP_NAME = "整理檔案"
-APP_VERSION = "1.0.2"   # 發版時改這個
+APP_VERSION = "1.0.0"   # 發版時改這個
 MANIFEST_URL = "https://raw.githubusercontent.com/derek3411888/file-organizer/main/manifest.json"
 UPDATE_INFO_URL = MANIFEST_URL   # ← 新增：讓下面函式用到的名稱一致
 
