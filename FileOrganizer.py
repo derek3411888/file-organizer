@@ -5,9 +5,9 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 # ========= 基本資訊（請依你的 GitHub 倉庫調整） =========
-APP_NAME = "整理檔案"
-APP_VERSION = "1.0.0"   # 發版時改這個
-MANIFEST_URL = "https://raw.githubusercontent.com/derek3411888/file-organizer/main/manifest.json"
+APP_NAME = "FileOrganizer"
+APP_VERSION = "1.0.1"   # 發版時改這個
+MANIFEST_URL = "https://raw.githubusercontent.com/derek3411888/file-organizer/refs/heads/main/manifest.json"
 UPDATE_INFO_URL = MANIFEST_URL   # ← 新增：讓下面函式用到的名稱一致
 
 
@@ -1044,33 +1044,58 @@ def _download_to_tmp(url, suffix):
     return p
 
 def _write_bat_and_run(args):
-    # 建立 .bat：等原程式退出 -> 覆蓋 -> 重啟
-    fd, bat = tempfile.mkstemp(suffix=".bat")
-    os.close(fd)
-    script = r"""@echo off
-setlocal
-set "NEW=%~1"
-set "TARGET=%~2"
-set "PYEXE=%~3"
-set "PYSRC=%~4"
-:WAIT_LOOP
-ping 127.0.0.1 -n 2 >nul
-del /f /q "%TARGET%" >nul 2>&1
-if exist "%TARGET%" goto WAIT_LOOP
-move /Y "%NEW%" "%TARGET%" >nul
-if "%PYEXE%"=="" (
-  start "" "%TARGET%"
-) else (
-  start "" "%PYEXE%" "%PYSRC%"
+    # 這版實際上寫的是 .ps1，用 PowerShell 做替換，更穩定且支援中文路徑。
+    # 參數: args = [NEW, TARGET, PYEXE(可空), PYSRC(可空)]
+    ps_content = r'''
+param(
+  [Parameter(Mandatory=$true)][string]$NEW,
+  [Parameter(Mandatory=$true)][string]$TARGET,
+  [string]$PYEXE = "",
+  [string]$PYSRC = ""
 )
-del "%~f0"
-"""
-    with open(bat, "w", encoding="utf-8") as f:
-        f.write(script)
+
+# 等原程式關閉並釋放檔案
+$max = 120
+for ($i=0; $i -lt $max; $i++) {
+    try {
+        if (Test-Path -LiteralPath $TARGET) {
+            Remove-Item -LiteralPath $TARGET -Force
+        }
+        break
+    } catch {
+        Start-Sleep -Milliseconds 300
+    }
+}
+
+# 搬新檔覆蓋
+Move-Item -LiteralPath $NEW -Destination $TARGET -Force
+
+# 重新啟動
+if ([string]::IsNullOrWhiteSpace($PYEXE)) {
+    Start-Process -FilePath $TARGET | Out-Null
+} else {
+    if ([string]::IsNullOrWhiteSpace($PYSRC)) {
+        Start-Process -FilePath $PYEXE | Out-Null
+    } else {
+        Start-Process -FilePath $PYEXE -ArgumentList @("$PYSRC") | Out-Null
+    }
+}
+'''
+    fd, ps1 = tempfile.mkstemp(suffix=".ps1"); os.close(fd)
+    with open(ps1, "w", encoding="utf-8") as f:
+        f.write(ps_content)
+
+    # 用 PowerShell 執行（繞過執行原則）
     try:
-        subprocess.Popen([bat] + args, shell=True, creationflags=subprocess.CREATE_NEW_CONSOLE)
+        subprocess.Popen([
+            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", ps1
+        ] + args, creationflags=subprocess.CREATE_NEW_CONSOLE)
     except Exception:
-        os.system('start "" "{}" {}'.format(bat, " ".join(f'"{a}"' for a in args)))
+        os.system('powershell -NoProfile -ExecutionPolicy Bypass -File "{}" {}'.format(
+            ps1, " ".join('"{}"'.format(a) for a in args)
+        ))
+
 
 def check_for_updates(silent=False, parent=None):
     # 讀取 manifest.json（支援 url/exe_url/py_url，主要用 url）
