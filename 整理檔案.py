@@ -6,8 +6,10 @@ from tkinter import ttk, messagebox, filedialog
 
 # ========= 基本資訊（請依你的 GitHub 倉庫調整） =========
 APP_NAME = "整理檔案"
-APP_VERSION = "1.0.1"   # 發版時改這個
+APP_VERSION = "1.0.2"   # 發版時改這個
 MANIFEST_URL = "https://raw.githubusercontent.com/derek3411888/file-organizer/main/manifest.json"
+UPDATE_INFO_URL = MANIFEST_URL   # ← 新增：讓下面函式用到的名稱一致
+
 
 # 自動更新相關
 AUTO_CHECK_ON_START = True   # 啟動時自動檢查
@@ -1073,13 +1075,13 @@ del "%~f0"
 def check_for_updates(silent=False, parent=None):
     # 讀取 manifest.json（支援 url/exe_url/py_url，主要用 url）
     try:
-        info_raw = _http_get(MANIFEST_URL).decode("utf-8", "replace")
+        info_raw = _http_get(MANIFEST_URL).decode("utf-8", "replace")  # 或 _http_get(UPDATE_INFO_URL)
         info = json.loads(info_raw)
         latest = str(info.get("version", "0.0.0"))
         notes  = str(info.get("notes", "") or "")
-        # 兼容欄位：優先用 url，其次 exe_url / py_url
-        url_exe = info.get("url", "") or info.get("exe_url", "")
-        url_py  = info.get("py_url", "")
+        exe_url = info.get("exe_url") or info.get("url", "")  # ← 兼容你的 manifest.json
+        py_url  = info.get("py_url", "")
+
     except Exception as e:
         if not silent:
             messagebox.showwarning("更新", f"取得更新資訊失敗：{e}")
@@ -1096,18 +1098,18 @@ def check_for_updates(silent=False, parent=None):
 
     try:
         if getattr(sys, "frozen", False):
-            if not url_exe:
+            if not exe_url:
                 messagebox.showwarning("更新", "manifest.json 未提供可下載的 .exe（url 或 exe_url）。")
                 return
-            new_path = _download_to_tmp(url_exe, ".exe")
+            new_path = _download_to_tmp(exe_url, ".exe")
             target  = os.path.abspath(sys.executable)
             _write_bat_and_run([new_path, target])
         else:
             # 純 .py 執行時可用 py_url（若沒提供就提示）
-            if not url_py:
+            if not py_url:
                 messagebox.showwarning("更新", "manifest.json 未提供 py_url（原始碼更新網址）。")
                 return
-            new_path = _download_to_tmp(url_py, ".py")
+            new_path = _download_to_tmp(py_url, ".py")
             target   = os.path.abspath(__file__)
             # 以 pythonw 優先重啟（若不存在就用目前的 python）
             candidate = sys.executable.replace("python.exe", "pythonw.exe")
