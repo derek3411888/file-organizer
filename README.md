@@ -12,7 +12,7 @@
 - 進度條與預計完成時間顯示  
 
 ## 🖼️ 使用畫面
-![screenshot](docs/螢幕擷取畫面 2025-08-26 205401.png)  
+![screenshot](docs/ui-main.png)  
 （此處可放 GUI 介面截圖）
 
 ## 🚀 使用方式
