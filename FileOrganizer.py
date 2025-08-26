@@ -10,6 +10,10 @@ APP_VERSION = "1.0.1"   # 發版時改這個
 MANIFEST_URL = "https://raw.githubusercontent.com/derek3411888/file-organizer/refs/heads/main/manifest.json"
 UPDATE_INFO_URL = MANIFEST_URL   # ← 新增：讓下面函式用到的名稱一致
 
+DEBUG_UPDATE = True  # 開發期先設 True（會顯示黑窗與暫停）；穩定後改 False
+UPDATE_LOG = os.path.join(tempfile.gettempdir(), "FileOrganizer_update.log")
+
+
 
 # 自動更新相關
 AUTO_CHECK_ON_START = True   # 啟動時自動檢查
@@ -1044,103 +1048,143 @@ def _download_to_tmp(url, suffix):
     return p
 
 def _write_bat_and_run(args):
-    # 這版實際上寫的是 .ps1，用 PowerShell 做替換，更穩定且支援中文路徑。
-    # 參數: args = [NEW, TARGET, PYEXE(可空), PYSRC(可空)]
-    ps_content = r'''
-param(
-  [Parameter(Mandatory=$true)][string]$NEW,
-  [Parameter(Mandatory=$true)][string]$TARGET,
-  [string]$PYEXE = "",
-  [string]$PYSRC = ""
+    """
+    args: [NEW_PATH, TARGET_EXE_OR_PY, PYEXE_OR_EMPTY, PYSRC_OR_EMPTY]
+    會：1) 等舊程式退出→2) 重試刪除→3) 改名/覆蓋→4) 依參數重啟
+    全程把訊息寫到 UPDATE_LOG（%TEMP%/FileOrganizer_update.log）
+    """
+    fd, bat = tempfile.mkstemp(suffix=".bat")
+    os.close(fd)
+
+    # 用 ^ 續行，所有關鍵步驟寫入 log；DEBUG_UPDATE 時最後加 PAUSE
+    script = rf"""@echo off
+setlocal ENABLEDELAYEDEXPANSION
+chcp 65001 >nul
+set "LOG={UPDATE_LOG}"
+echo === [{APP_NAME}] Self-Update started %date% %time% ===> "%LOG%"
+echo BAT path: "%~f0" >> "%LOG%"
+
+set "NEW=%~1"
+set "TARGET=%~2"
+set "PYEXE=%~3"
+set "PYSRC=%~4"
+
+echo NEW="%NEW%" >> "%LOG%"
+echo TARGET="%TARGET%" >> "%LOG%"
+echo PYEXE="%PYEXE%" >> "%LOG%"
+echo PYSRC="%PYSRC%" >> "%LOG%"
+
+rem 等待舊檔解鎖
+set RETRIES=30
+:WAIT_UNLOCK
+  2>nul (>>"%TARGET%" echo test) && (echo target free >> "%LOG%") && goto DO_REPLACE
+  echo target locked, retry... >> "%LOG%"
+  timeout /t 1 /nobreak >nul
+  set /a RETRIES-=1
+  if %RETRIES% GTR 0 goto WAIT_UNLOCK
+
+echo ERROR: target still locked after retries >> "%LOG%"
+goto END
+
+:DO_REPLACE
+echo Try delete old target >> "%LOG%"
+del /f /q "%TARGET%" >> "%LOG%" 2>&1
+if exist "%TARGET%" (
+  echo delete failed, will overwrite by move/copy >> "%LOG%"
 )
 
-# 等原程式關閉並釋放檔案
-$max = 120
-for ($i=0; $i -lt $max; $i++) {
-    try {
-        if (Test-Path -LiteralPath $TARGET) {
-            Remove-Item -LiteralPath $TARGET -Force
-        }
-        break
-    } catch {
-        Start-Sleep -Milliseconds 300
-    }
-}
+echo Move new to target >> "%LOG%"
+move /Y "%NEW%" "%TARGET%" >> "%LOG%" 2>&1
+if errorlevel 1 (
+  echo move failed, try copy /Y then del >> "%LOG%"
+  copy /Y "%NEW%" "%TARGET%" >> "%LOG%" 2>&1
+  if errorlevel 1 (
+    echo ERROR: copy failed too >> "%LOG%"
+    goto END
+  )
+)
 
-# 搬新檔覆蓋
-Move-Item -LiteralPath $NEW -Destination $TARGET -Force
+echo Restart phase >> "%LOG%"
+if "%PYEXE%"=="" (
+  start "" "%TARGET%" >> "%LOG%" 2>&1
+) else (
+  start "" "%PYEXE%" "%PYSRC%" >> "%LOG%" 2>&1
+)
 
-# 重新啟動
-if ([string]::IsNullOrWhiteSpace($PYEXE)) {
-    Start-Process -FilePath $TARGET | Out-Null
-} else {
-    if ([string]::IsNullOrWhiteSpace($PYSRC)) {
-        Start-Process -FilePath $PYEXE | Out-Null
-    } else {
-        Start-Process -FilePath $PYEXE -ArgumentList @("$PYSRC") | Out-Null
-    }
-}
-'''
-    fd, ps1 = tempfile.mkstemp(suffix=".ps1"); os.close(fd)
-    with open(ps1, "w", encoding="utf-8") as f:
-        f.write(ps_content)
+:END
+echo === Self-Update done %date% %time% ===>> "%LOG%"
+"""
 
-    # 用 PowerShell 執行（繞過執行原則）
+    if DEBUG_UPDATE:
+        script += "\r\npause\r\n"
+
+    with open(bat, "w", encoding="utf-8") as f:
+        f.write(script)
+
     try:
-        subprocess.Popen([
-            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-            "-File", ps1
-        ] + args, creationflags=subprocess.CREATE_NEW_CONSOLE)
+        # 用 cmd /c 執行 bat；DEBUG_UPDATE=True 時會留下黑窗
+        subprocess.Popen(["cmd.exe", "/c", bat] + args, creationflags=0)
     except Exception:
-        os.system('powershell -NoProfile -ExecutionPolicy Bypass -File "{}" {}'.format(
-            ps1, " ".join('"{}"'.format(a) for a in args)
-        ))
+        os.system('start "" cmd /c "{}" {}'.format(bat, " ".join(f'"{a}"' for a in args)))
+
+
 
 
 def check_for_updates(silent=False, parent=None):
-    # 讀取 manifest.json（支援 url/exe_url/py_url，主要用 url）
-    try:
-        info_raw = _http_get(MANIFEST_URL).decode("utf-8", "replace")  # 或 _http_get(UPDATE_INFO_URL)
-        info = json.loads(info_raw)
-        latest = str(info.get("version", "0.0.0"))
-        notes  = str(info.get("notes", "") or "")
-        exe_url = info.get("exe_url") or info.get("url", "")  # ← 兼容你的 manifest.json
-        py_url  = info.get("py_url", "")
+    # 判斷是否為打包執行（Nuitka/pyinstaller 皆可）
+    IS_FROZEN = bool(getattr(sys, "frozen", False) or "__compiled__" in globals())
 
+    # 讀取 manifest.json（支援 exe_url / url / py_url）
+    try:
+        info_raw = _http_get(MANIFEST_URL).decode("utf-8", "replace")
+        info     = json.loads(info_raw)
+        latest   = str(info.get("version", "0.0.0"))
+        notes    = str(info.get("notes", "") or "")
+        exe_url  = info.get("exe_url") or info.get("url", "")  # 兼容 url 欄位
+        py_url   = info.get("py_url", "")
     except Exception as e:
         if not silent:
             messagebox.showwarning("更新", f"取得更新資訊失敗：{e}")
         return
 
+    # 已是最新
     if _ver_tuple(latest) <= _ver_tuple(APP_VERSION):
         if not silent:
             messagebox.showinfo("更新", f"目前已是最新版本（{APP_VERSION}）。")
         return
 
-    msg = f"偵測到新版本 {latest}（目前 {APP_VERSION}）。\n\n更新內容：\n{notes or '—'}\n\n要立即更新嗎？"
+    # 詢問是否更新
+    msg = (
+        f"偵測到新版本 {latest}（目前 {APP_VERSION}）。\n\n"
+        f"更新內容：\n{notes or '—'}\n\n要立即更新嗎？"
+    )
     if not messagebox.askyesno("有可用更新", msg, parent=parent):
         return
 
+    # 下載與交棒給更新腳本
     try:
-        if getattr(sys, "frozen", False):
+        if IS_FROZEN:
             if not exe_url:
-                messagebox.showwarning("更新", "manifest.json 未提供可下載的 .exe（url 或 exe_url）。")
+                messagebox.showwarning("更新", "manifest.json 未提供 exe_url/url。")
                 return
             new_path = _download_to_tmp(exe_url, ".exe")
-            target  = os.path.abspath(sys.executable)
-            _write_bat_and_run([new_path, target])
+            target   = os.path.abspath(sys.executable)  # 目前執行中的 .exe
+            # 直接覆蓋並重啟 exe（第三、四參數留空）
+            _write_bat_and_run([new_path, target, "", ""])
         else:
-            # 純 .py 執行時可用 py_url（若沒提供就提示）
             if not py_url:
                 messagebox.showwarning("更新", "manifest.json 未提供 py_url（原始碼更新網址）。")
                 return
             new_path = _download_to_tmp(py_url, ".py")
             target   = os.path.abspath(__file__)
-            # 以 pythonw 優先重啟（若不存在就用目前的 python）
+            # 優先用 pythonw 重啟，沒有則回退 python
             candidate = sys.executable.replace("python.exe", "pythonw.exe")
             pythonw   = candidate if os.path.exists(candidate) else sys.executable
             _write_bat_and_run([new_path, target, pythonw, target])
-        sys.exit(0)  # 交給 bat 接手
+
+        # 立刻退出，讓外部批次/PS 腳本接手覆蓋與重啟
+        sys.exit(0)
+
     except urllib.error.URLError as e:
         messagebox.showerror("更新", f"下載失敗：{e}")
     except Exception as e:
