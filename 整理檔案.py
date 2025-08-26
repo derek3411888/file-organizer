@@ -5,12 +5,15 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 # ========= 基本資訊（請依你的 GitHub 倉庫調整） =========
-APP_NAME = "多根目錄整理與分類"
-APP_VERSION = "1.0.0"   # ← 發布時記得同步調整
-AUTO_CHECK_ON_START = True
-# 你的 update.json Raw 連結（步驟在文末教）：
-UPDATE_INFO_URL = "https://raw.githubusercontent.com/<你的GitHub帳號>/<你的Repo>/main/update.json"
-HTTP_TIMEOUT = 10
+APP_NAME = "整理檔案"
+APP_VERSION = "1.0.1"   # 發版時改這個
+MANIFEST_URL = "https://raw.githubusercontent.com/derek3411888/file-organizer/main/manifest.json"
+
+# 自動更新相關
+AUTO_CHECK_ON_START = True   # 啟動時自動檢查
+HTTP_TIMEOUT = 20            # 下載逾時秒數
+
+
 
 # ====== 可用代碼說明 ======
 CUSTOM_HELP = r"""
@@ -1021,7 +1024,8 @@ class DeleteToolDialog(tk.Toplevel):
         threading.Thread(target=worker, daemon=True).start()
 
 # ========= 自動更新（GitHub Raw + Release） =========
-def _ver_tuple(v):
+# ========= 自動更新（GitHub Raw + Release） =========
+def _ver_tuple(v: str):
     return tuple(int(x) for x in re.findall(r"\d+", v)[:3] or [0])
 
 def _http_get(url, timeout=HTTP_TIMEOUT):
@@ -1033,14 +1037,14 @@ def _download_to_tmp(url, suffix):
     data = _http_get(url)
     fd, p = tempfile.mkstemp(suffix=suffix)
     os.close(fd)
-    with open(p, "wb") as f: f.write(data)
+    with open(p, "wb") as f:
+        f.write(data)
     return p
 
 def _write_bat_and_run(args):
-    # 建立一個 .bat 等原程式退出後再覆蓋並重啟
+    # 建立 .bat：等原程式退出 -> 覆蓋 -> 重啟
     fd, bat = tempfile.mkstemp(suffix=".bat")
     os.close(fd)
-    # %1: NEW, %2: TARGET, %3: PYEXE(選填), %4: PYSRC(選填)
     script = r"""@echo off
 setlocal
 set "NEW=%~1"
@@ -1059,22 +1063,23 @@ if "%PYEXE%"=="" (
 )
 del "%~f0"
 """
-    with open(bat, "w", encoding="utf-8") as f: f.write(script)
-    # 用 start 啟動，隨即結束 Python 程式
-    # Windows 允許 .bat 接參數，但 os.startfile 不行，用 subprocess
+    with open(bat, "w", encoding="utf-8") as f:
+        f.write(script)
     try:
         subprocess.Popen([bat] + args, shell=True, creationflags=subprocess.CREATE_NEW_CONSOLE)
     except Exception:
         os.system('start "" "{}" {}'.format(bat, " ".join(f'"{a}"' for a in args)))
 
 def check_for_updates(silent=False, parent=None):
+    # 讀取 manifest.json（支援 url/exe_url/py_url，主要用 url）
     try:
-        info_raw = _http_get(UPDATE_INFO_URL).decode("utf-8", "replace")
+        info_raw = _http_get(MANIFEST_URL).decode("utf-8", "replace")
         info = json.loads(info_raw)
         latest = str(info.get("version", "0.0.0"))
-        notes = str(info.get("notes", "") or "")
-        exe_url = info.get("exe_url", "")
-        py_url = info.get("py_url", "")
+        notes  = str(info.get("notes", "") or "")
+        # 兼容欄位：優先用 url，其次 exe_url / py_url
+        url_exe = info.get("url", "") or info.get("exe_url", "")
+        url_py  = info.get("py_url", "")
     except Exception as e:
         if not silent:
             messagebox.showwarning("更新", f"取得更新資訊失敗：{e}")
@@ -1091,27 +1096,29 @@ def check_for_updates(silent=False, parent=None):
 
     try:
         if getattr(sys, "frozen", False):
-            if not exe_url:
-                messagebox.showwarning("更新", "update.json 未提供 exe_url。"); return
-            new_path = _download_to_tmp(exe_url, ".exe")
-            target = os.path.abspath(sys.executable)
+            if not url_exe:
+                messagebox.showwarning("更新", "manifest.json 未提供可下載的 .exe（url 或 exe_url）。")
+                return
+            new_path = _download_to_tmp(url_exe, ".exe")
+            target  = os.path.abspath(sys.executable)
             _write_bat_and_run([new_path, target])
         else:
-            if not py_url:
-                messagebox.showwarning("更新", "update.json 未提供 py_url。"); return
-            new_path = _download_to_tmp(py_url, ".py")
-            target = os.path.abspath(__file__)
-            # 使用相同 Python 重新啟動
-            pyexe = sys.executable.replace("python.exe", "pythonw.exe")
-            if not os.path.exists(pythonw := pyexe):
-                pythonw = sys.executable
+            # 純 .py 執行時可用 py_url（若沒提供就提示）
+            if not url_py:
+                messagebox.showwarning("更新", "manifest.json 未提供 py_url（原始碼更新網址）。")
+                return
+            new_path = _download_to_tmp(url_py, ".py")
+            target   = os.path.abspath(__file__)
+            # 以 pythonw 優先重啟（若不存在就用目前的 python）
+            candidate = sys.executable.replace("python.exe", "pythonw.exe")
+            pythonw   = candidate if os.path.exists(candidate) else sys.executable
             _write_bat_and_run([new_path, target, pythonw, target])
-        # 結束本程式，讓 bat 接手替換並重啟
-        sys.exit(0)
+        sys.exit(0)  # 交給 bat 接手
     except urllib.error.URLError as e:
         messagebox.showerror("更新", f"下載失敗：{e}")
     except Exception as e:
         messagebox.showerror("更新", f"更新失敗：{e}")
+
 
 # ---------- 主程式 ----------
 class App(tk.Tk):
@@ -1125,7 +1132,7 @@ class App(tk.Tk):
         self.config(menu=m)
         m_help = tk.Menu(m, tearoff=0)
         m.add_cascade(label="說明", menu=m_help)
-        m_help.add_command(label="檢查更新…", command=lambda: check_for_updates(silent=False, parent=self))
+        m_help.add_command(label="檢查更新…", command=lambda: check_for_updates(silent=True, parent=self))
         m_help.add_command(label="關於", command=lambda: messagebox.showinfo("關於", f"{APP_NAME}\n版本：{APP_VERSION}"))
 
         top = ttk.Frame(self, padding=8); top.pack(fill="x")
